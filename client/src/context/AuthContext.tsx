@@ -64,18 +64,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function login(employeeId: string, password: string): Promise<LoginResult> {
-    if (supabaseConfigured && supabase) {
-      const { error } = await supabase.auth.signInWithPassword({ email: employeeIdToEmail(employeeId), password })
-      if (error) return { success: false, error: error.message }
-      return { success: true }
-    }
-    // Offline demo mode
-    const found = DEMO_USERS.find(u => u.employeeId === employeeId && u.password === password)
-    if (!found || !found.isActive) return { success: false, error: 'Invalid employee ID or password' }
-    const { password: _pw, ...u } = found
-    setUser(u)
-    return { success: true }
+  if (supabaseConfigured && supabase) {
+    const { error } = await supabase.auth.signInWithPassword({ 
+      email: employeeIdToEmail(employeeId), 
+      password 
+    })
+    if (!error) return { success: true }
+    // Supabase auth failed; proceed to check local DEMO_USERS below
   }
+
+  // Offline / local fallback
+  const found = DEMO_USERS.find(u => u.employeeId === employeeId && u.password === password)
+  if (!found || !found.isActive) return { success: false, error: 'Invalid employee ID or password' }
+  const { password: _pw, ...u } = found
+  setUser(u)
+  return { success: true }
+}
 
   function logout() {
     if (supabaseConfigured && supabase) supabase.auth.signOut()
