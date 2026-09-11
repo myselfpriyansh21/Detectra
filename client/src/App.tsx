@@ -21,6 +21,8 @@ import Analytics from './components/Analytics'
 import AISuggestions from './components/AISuggestions'
 import CrimeAssistant from './components/CrimeAssistant'
 import AdminDashboard from './components/admin/AdminDashboard'
+import { supabaseConfigured } from './lib/supabase'
+import { fetchCases, fetchEvidence, insertCase, insertCasesBulk, updateCaseStatus as persistCaseStatus, insertEvidence } from './lib/casesApi'
 
 export default function App() {
   const { user, loading: authLoading } = useAuth()
@@ -29,11 +31,15 @@ export default function App() {
   const [showIntro, setShowIntro]     = useState(true)
   const [showWelcome, setShowWelcome] = useState(true)
   const [showAdmin, setShowAdmin]     = useState(false)
-  // Demo data is treated as permanent baseline data for the platform,
-  // not a one-off "load demo" action — the system starts populated,
-  // the way a production deployment would with existing case records.
-  const [incidents, setIncidents]     = useState<CrimeIncident[]>(() => [...loadSampleData(), ...loadFraudData()])
-  const [evidence, setEvidence]       = useState<Evidence[]>(() => FRAUD_SEED_EVIDENCE.map((e, i) => ({ ...e, id: `EV${i + 1}` })))
+  // Demo data is treated as permanent baseline data for the platform.
+  // When Supabase isn't configured, that baseline lives in memory (as
+  // before). When Supabase IS configured, cases/evidence are the real
+  // persisted records — loaded from the DB in the effect below, with
+  // the same demo/fraud dataset used only as a one-time seed if the
+  // `cases` table is still empty (fresh project).
+  const [incidents, setIncidents]     = useState<CrimeIncident[]>(() => supabaseConfigured ? [] : [...loadSampleData(), ...loadFraudData()])
+  const [evidence, setEvidence]       = useState<Evidence[]>(() => supabaseConfigured ? [] : FRAUD_SEED_EVIDENCE.map((e, i) => ({ ...e, id: `EV${i + 1}` })))
+  const [dataLoading, setDataLoading] = useState(supabaseConfigured)
   const [hotspots, setHotspots]       = useState<Hotspot[]>([])
   const [activeTab, setActiveTab]     = useState<ActiveTab>('network')
   const [loading, setLoading]         = useState(false)
@@ -67,11 +73,59 @@ export default function App() {
     : []
   const visibleEvidence = evidence.filter(ev => visibleIncidents.some(i => i.id === ev.caseId))
 
+  // Load persisted cases/evidence from Supabase once the user is signed
+  // in. If the `cases` table is still empty (fresh project, nobody has
+  // added anything yet), seed it once with the demo/fraud dataset so
+  // the app isn't blank on first run — every load after that reads the
+  // real persisted rows, so refreshing the page no longer loses data.
+  useEffect(() => {
+    if (!supabaseConfigured || !user) return
+    let cancelled = false
+    async function loadFromDb() {
+      setDataLoading(true)
+      const [dbCases, dbEvidence] = await Promise.all([fetchCases(), fetchEvidence()])
+      if (cancelled) return
+
+      if (dbCases && dbCases.length === 0) {
+        // Fresh project — seed once so there's something to demo.
+        const seedIncidents = [...loadSampleData(), ...loadFraudData()]
+        const seedEvidence = FRAUD_SEED_EVIDENCE.map((e, i) => ({ ...e, id: `EV${i + 1}` }))
+        await insertCasesBulk(seedIncidents, user!.id, user!.region, user!.department)
+        await Promise.all(seedEvidence.map(e => insertEvidence(e, user!.id, user!.region)))
+        if (!cancelled) { setIncidents(seedIncidents); setEvidence(seedEvidence) }
+      } else if (dbCases) {
+        setIncidents(dbCases)
+        setEvidence(dbEvidence ?? [])
+      }
+      if (!cancelled) setDataLoading(false)
+    }
+    loadFromDb()
+    return () => { cancelled = true }
+  }, [user?.id])
+
+
   // Admin lands straight in the control center after entering the
   // platform — that's the flagship view for this role.
   useEffect(() => {
     if (user?.role === 'Admin' && !showWelcome) setShowAdmin(true)
   }, [user?.id, showWelcome])
+
+  // Reset to the Welcome screen and default tab whenever the signed-in
+  // user changes — covers logout (user -> null) and logging back in as
+  // a different user. Without this, App.tsx never unmounts on logout
+  // (it just renders <Login/> conditionally), so showWelcome/activeTab
+  // stay stuck on whatever the previous session left them at.
+  const prevUserId = useRef<string | null>(null)
+  useEffect(() => {
+    const currentId = user?.id ?? null
+    if (currentId !== prevUserId.current) {
+      setShowWelcome(true)
+      setShowAdmin(false)
+      setActiveTab('network')
+      setFocusCaseId(null)
+      prevUserId.current = currentId
+    }
+  }, [user?.id])
 
   /* ── Browser back button support ── */
   const isPopping = useRef(false)
@@ -100,21 +154,25 @@ export default function App() {
       const parsed = parseCSVText(text)
       if (parsed.length === 0) { setError('File empty or wrong format.'); return }
       setIncidents(p => [...p, ...parsed])
+      if (supabaseConfigured && user) insertCasesBulk(parsed, user.id, user.region, submittingDepartment)
       logAction('UPLOAD_DATA', 'Dataset', `Uploaded CSV — ${parsed.length} records processed`)
       changeTab('cases')
     } catch { setError('Failed to parse CSV.') }
   }
   function handleAddIncident(inc: CrimeIncident) {
     setIncidents(p => [...p, inc])
+    if (supabaseConfigured && user) insertCase(inc, user.id, user.region, submittingDepartment)
     logAction('ADD_CASE', `Case: ${inc.id}`, `Added case via single-report entry (${submittingDepartment})`)
   }
   function handleAddIncidents(incs: CrimeIncident[]) {
     setIncidents(p => [...p, ...incs])
+    if (supabaseConfigured && user) insertCasesBulk(incs, user.id, user.region, submittingDepartment)
     logAction('BULK_ADD_CASES', 'Dataset', `Added ${incs.length} cases via batch upload (${submittingDepartment})`)
   }
   function handleAddEvidence(caseId: string, ev: Omit<Evidence, 'id' | 'caseId' | 'createdAt'>) {
-    const entry: Evidence = { ...ev, id: `EV${evidence.length + 1}`, caseId, createdAt: new Date().toISOString() }
+    const entry: Evidence = { ...ev, id: `EV${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, caseId, createdAt: new Date().toISOString() }
     setEvidence(p => [...p, entry])
+    if (supabaseConfigured && user) insertEvidence(entry, user.id, user.region)
     logAction('ADD_EVIDENCE', `Case: ${caseId}`, `Attached ${ev.type} evidence (${ev.department})`)
   }
   function handleUpdateOfficer(id: string, name: string, badge: string) {
@@ -122,6 +180,7 @@ export default function App() {
   }
   function handleUpdateStatus(id: string, status: CrimeIncident['case_status']) {
     setIncidents(p => p.map(i => i.id === id ? { ...i, case_status: status } : i))
+    if (supabaseConfigured) persistCaseStatus(id, status)
     logAction('UPDATE_CASE_STATUS', `Case: ${id}`, `Status changed to ${status}`)
   }
   function handleAddImage(img: CaseImage) {
@@ -160,6 +219,14 @@ export default function App() {
   if (!user) return <Login />
   if (showIntro) return <IntroAnimation onComplete={() => setShowIntro(false)} />
   if (showWelcome) return <Welcome onEnter={() => setShowWelcome(false)} />
+  if (dataLoading) return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-slate-50">
+      <div className="flex flex-col items-center gap-3">
+        <div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-slate-500 text-sm">Loading cases from database…</p>
+      </div>
+    </div>
+  )
   if (showAdmin) return <AdminDashboard onExit={() => setShowAdmin(false)} />
 
   return (

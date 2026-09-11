@@ -3,7 +3,6 @@ import { useTheme } from '../context/ThemeContext'
 import type { CrimeIncident, Department, Evidence } from '../types'
 import { STATIONS } from '../utils/jurisdiction'
 import EvidenceForm from './EvidenceForm'
-import detectraIcon from '../assets/detectra.png'
 
 const LOCALITIES: Record<string, [number, number]> = {
   'hebbal': [13.0358, 77.5972],
@@ -261,7 +260,7 @@ export default function LandingPage({
   function handleAddFIR() {
     if (!parsed) return
     const [lat, lon] = resolveLocation(parsed.locations)
-    const id = `FIR${String(existingCount + 1).padStart(3, '0')}`
+    const id = `FIR${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`
     onAddIncident({
       id,
       date: new Date().toISOString().split('T')[0],
@@ -299,7 +298,7 @@ export default function LandingPage({
         const p = extractLocally(b)
         const [lat, lon] = resolveLocation(p.locations)
         return {
-          id: `BULK${String(existingCount + i + 1).padStart(3, '0')}`,
+          id: `BULK${Date.now().toString(36)}${i}${Math.random().toString(36).slice(2,4)}`,
           date: new Date().toISOString().split('T')[0],
           latitude: lat,
           longitude: lon,

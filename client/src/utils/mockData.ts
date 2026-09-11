@@ -136,7 +136,7 @@ export function parseCSVText(text: string): CrimeIncident[] {
     const row: Record<string, string> = {}
     headers.forEach((h, i) => { row[h] = values[i] ?? '' })
     return {
-      id: row.id || `INC${String(idx + 1).padStart(3, '0')}`,
+      id: row.id || `INC${Date.now().toString(36)}${idx}${Math.random().toString(36).slice(2, 4)}`,
       date: row.date || '',
       // Fallback center is India's geographic centroid, not any one city —
       // used only when a row's coordinates are missing/unparseable.

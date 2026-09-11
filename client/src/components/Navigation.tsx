@@ -5,7 +5,6 @@ import { useLanguage } from '../context/LanguageContext'
 import { useAuth } from '../context/AuthContext'
 import { useDirectory } from '../context/DirectoryContext'
 import { jurisdictionLabel } from '../utils/jurisdiction'
-import { LANGUAGES } from '../translations'
 import RequestAccessModal from './RequestAccessModal'
 import detectraLogo from '../assets/detectra.png'
 
@@ -31,7 +30,7 @@ const TAB_ICONS: { key: ActiveTab; Icon: typeof Network }[] = [
 ]
 
 export default function Navigation({ activeTab, onTabChange, incidentCount, onGoHome, onBack, canGoBack, onOpenAdmin }: NavigationProps) {
-  const { lang, setLang, t } = useLanguage()
+  const { t } = useLanguage()
   const { user, logout } = useAuth()
   const { currentUserRecord } = useDirectory()
   const [showRequestModal, setShowRequestModal] = useState(false)
@@ -46,8 +45,6 @@ export default function Navigation({ activeTab, onTabChange, incidentCount, onGo
   const textSub     = 'text-slate-500'
   const badgeBg     = 'bg-slate-100'
   const tabInactive = 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
-  const langBarBg   = 'border-slate-200 bg-slate-100'
-  const langTextInactive = 'text-slate-600 hover:text-amber-600'
 
   const showJurisdiction = user && (user.role === 'Officer' || user.role === 'State Analyst')
 
@@ -99,22 +96,6 @@ export default function Navigation({ activeTab, onTabChange, incidentCount, onGo
               {jurisdictionLabel(currentUserRecord)}
             </button>
           )}
-
-          {/* Language switcher */}
-          <div className={`flex items-center rounded-full p-0.5 border text-xs font-medium ${langBarBg}`}>
-            {LANGUAGES.map(l => (
-              <button
-                key={l.code}
-                onClick={() => setLang(l.code)}
-                title={l.label}
-                className={`px-2.5 py-1 rounded-full transition-all duration-150 ${
-                  lang === l.code ? 'bg-amber-500 text-white' : langTextInactive
-                }`}
-              >
-                {l.native}
-              </button>
-            ))}
-          </div>
 
           {/* User badge + admin link + logout */}
           {user && (

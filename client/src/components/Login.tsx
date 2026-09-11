@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
-import { DEMO_USERS } from '../utils/syntheticData'
 import detectraLogo from '../assets/detectra.png'
 
 export default function Login() {
-  const { login, demoMode } = useAuth()
+  const { login } = useAuth()
   const { isDark } = useTheme()
   const [employeeId, setEmployeeId] = useState('')
   const [password, setPassword] = useState('')
@@ -78,27 +77,6 @@ export default function Login() {
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-
-        {demoMode && (
-          <div className="mt-6">
-            <p className={`text-xs font-semibold uppercase tracking-wide mb-2 ${label}`}>
-              Demo mode — tap a role to autofill credentials
-            </p>
-            <div className={`rounded-lg border text-xs divide-y ${isDark ? 'border-slate-800 divide-slate-800' : 'border-slate-200 divide-slate-200'}`}>
-              {DEMO_USERS.map(u => (
-                <button
-                  key={u.employeeId}
-                  type="button"
-                  onClick={() => { setEmployeeId(u.employeeId); setPassword(u.password) }}
-                  className={`w-full flex items-center justify-between px-3 py-2 text-left hover:bg-amber-500/10 transition-colors`}
-                >
-                  <span className={isDark ? 'text-slate-300' : 'text-slate-700'}>{u.role}</span>
-                  <span className="font-mono text-amber-500">{u.employeeId}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )
