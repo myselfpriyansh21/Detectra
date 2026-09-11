@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Fixes blurry/fuzzy rendering on small, bold, letter-spaced text
+   (e.g. the "KARNATAKA POLICE · AI CRIME ANALYTICS" tagline, tab
+   labels) — Chromium doesn't antialias small caps well by default. */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Leaflet map background — was hardcoded dark (#0f172a) always.
+   Now respects the .dark class your ThemeContext toggles on <html>. */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #f8fafc; /* light mode: slate-50 */
+}
+.dark .leaflet-container {
+  background: #0f172a; /* dark mode: slate-900 */
+}
+
+/* Scrollbar — was hardcoded dark always, invisible/muddy on light bg */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #e2e8f0; } /* light mode: slate-200 */
+::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 2px; } /* slate-400 */
+
+.dark ::-webkit-scrollbar-track { background: #1e293b; } /* slate-800 */
+.dark ::-webkit-scrollbar-thumb { background: #475569; border-radius: 2px; } /* slate-600 */

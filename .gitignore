@@ -1,0 +1,27 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+__pycache__/
+*.pyc
+venv/
+.venv/
+# Frontend
+client/node_modules/
+client/dist/
+
+# Python
+backend/__pycache__/
+backend/*.pyc
+backend/.venv/
+backend/venv/
+
+# Environment variables
+.env
+.env.local
+client/.env
+client/.env.local
+backend/.env
+
+# IDE
+.vscode/
