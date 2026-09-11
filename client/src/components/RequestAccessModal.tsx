@@ -1,19 +1,49 @@
 import { useState } from 'react'
 import { useDirectory } from '../context/DirectoryContext'
+import { useAuth } from '../context/AuthContext'
 import { STATIONS } from '../utils/jurisdiction'
+import { supabase, supabaseConfigured } from '../lib/supabase'
 
 export default function RequestAccessModal({ onClose }: { onClose: () => void }) {
   const { submitAccessRequest } = useDirectory()
+  const { user } = useAuth()
   const [scope, setScope] = useState(STATIONS[0].district)
   const [reason, setReason] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [loading, setLoading] = useState(false)
 
   const districts = [...new Set(STATIONS.map(s => s.district))]
   const zones = [...new Set(STATIONS.map(s => s.zone))]
 
-  function submit() {
-    if (!reason.trim()) return
+  async function submit() {
+    if (!reason.trim() || loading) return
+    setLoading(true)
+
+    const reqId = `REQ-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`
+
+    // 1. Update in-memory directory context (local state)
     submitAccessRequest(reason.trim(), scope)
+
+    // 2. Persist to Supabase database so Admin can see it across sessions
+    if (supabaseConfigured && supabase) {
+      try {
+        const { error } = await supabase.from('access_grants').insert({
+          id: reqId,
+          user_id: user?.id || 'U3',
+          user_name: user?.name || 'Officer',
+          role: user?.role || 'Officer',
+          current_jurisdiction: user?.region || 'North Zone',
+          requested_jurisdiction: scope,
+          reason: reason.trim(),
+          status: 'Pending',
+        })
+        if (error) console.error('Failed to write access request to Supabase:', error.message)
+      } catch (err) {
+        console.error('Supabase access request error:', err)
+      }
+    }
+
+    setLoading(false)
     setSubmitted(true)
   }
 
@@ -49,7 +79,9 @@ export default function RequestAccessModal({ onClose }: { onClose: () => void })
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none mb-4" />
 
             <div className="flex items-center gap-2">
-              <button onClick={submit} className="flex-1 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold text-sm">Submit Request</button>
+              <button onClick={submit} disabled={loading} className="flex-1 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold text-sm disabled:opacity-50">
+                {loading ? 'Submitting…' : 'Submit Request'}
+              </button>
               <button onClick={onClose} className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 font-medium text-sm">Cancel</button>
             </div>
           </>

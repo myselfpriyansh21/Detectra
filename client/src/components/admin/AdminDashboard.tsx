@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect, useCallback } from 'react'
 import { useTheme } from '../../context/ThemeContext'
 import { useAuth } from '../../context/AuthContext'
 import { useAudit } from '../../context/AuditContext'
@@ -6,6 +6,7 @@ import { useDirectory } from '../../context/DirectoryContext'
 import { DEMO_ENTITIES, DEMO_RELATIONSHIPS } from '../../utils/syntheticData'
 import { STATIONS, jurisdictionLabel } from '../../utils/jurisdiction'
 import type { AppUser, UserRole, Rank, Department } from '../../types'
+import { supabase, supabaseConfigured } from '../../lib/supabase'
 import detectraIcon from '../../assets/detectra.png'
 
 type AdminTab = 'overview' | 'users' | 'jurisdiction' | 'requests' | 'audit'
@@ -17,16 +18,60 @@ const DEPARTMENTS: Department[] = ['Local Police', 'Cyber Cell', 'Financial Inte
 export default function AdminDashboard({ onExit }: { onExit: () => void }) {
   const { user, logout } = useAuth()
   const { entries, logAction, verifyIntegrity, source } = useAudit()
-  const { users, addUser, toggleUserActive, requests, resolveAccessRequest } = useDirectory()
+  const { users, addUser, toggleUserActive, requests: localRequests, resolveAccessRequest } = useDirectory()
   const [tab, setTab] = useState<AdminTab>('overview')
   const [integrity, setIntegrity] = useState<{ checked: boolean; valid: boolean; brokenAtIndex: number | null }>({ checked: false, valid: true, brokenAtIndex: null })
+  
+  // Database-backed requests state
+  const [dbRequests, setDbRequests] = useState<any[]>([])
+
+  const loadDbRequests = useCallback(async () => {
+    if (!supabaseConfigured || !supabase) return
+    const { data, error } = await supabase
+      .from('access_grants')
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    if (!error && data) {
+      const mapped = data.map(r => ({
+        id: r.id,
+        userId: r.user_id,
+        userName: r.user_name,
+        requestedAt: r.created_at,
+        scopeRequested: r.requested_jurisdiction,
+        reason: r.reason,
+        status: r.status,
+        resolvedBy: r.status !== 'Pending' ? 'Admin' : undefined,
+      }))
+      setDbRequests(mapped)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadDbRequests()
+  }, [loadDbRequests])
+
+  // Merge DB requests with any local memory requests, preferring DB
+  const requests = supabaseConfigured && dbRequests.length > 0 ? dbRequests : localRequests
+
+  async function handleResolveRequest(id: string, decision: 'Approved' | 'Denied') {
+    resolveAccessRequest(id, decision)
+    if (supabaseConfigured && supabase) {
+      await supabase
+        .from('access_grants')
+        .update({ status: decision })
+        .eq('id', id)
+      loadDbRequests()
+    }
+    logAction('RESOLVE_ACCESS_REQUEST', `Request: ${id}`, `Admin marked request as ${decision}`)
+  }
 
   const bg = 'bg-slate-50 text-slate-900'
   const card = 'bg-white border-slate-200'
   const sub = 'text-slate-500'
   const tabInactive = 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
 
-  const pendingRequestCount = requests.filter(r => r.status === 'Pending').length
+  const pendingRequestCount = requests.filter((r: any) => r.status === 'Pending').length
 
   const stats = useMemo(() => ({
     totalEntities: DEMO_ENTITIES.length,
@@ -51,7 +96,7 @@ export default function AdminDashboard({ onExit }: { onExit: () => void }) {
           <img src={detectraIcon} alt="Detectra" className="w-9 h-9 object-contain" />
           <div>
             <h1 className="font-black text-xl tracking-widest text-amber-500">DETECTRA — ADMIN CONTROL CENTER</h1>
-            <p className={`text-xs ${sub}`}>{user?.name} · {user?.organization} · {source === 'supabase' ? 'Live database' : 'Demo mode'}</p>
+            <p className={`text-xs ${sub}`}>{user?.name} · {user?.organization} · {supabaseConfigured ? 'Live database' : 'Demo mode'}</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -97,7 +142,7 @@ export default function AdminDashboard({ onExit }: { onExit: () => void }) {
           <JurisdictionView users={users} card={card} sub={sub} />
         )}
         {tab === 'requests' && (
-          <AccessRequestsPanel requests={requests} resolveAccessRequest={resolveAccessRequest} card={card} sub={sub} />
+          <AccessRequestsPanel requests={requests} resolveAccessRequest={handleResolveRequest} card={card} sub={sub} />
         )}
         {tab === 'audit' && (
           <AuditTrail entries={entries} card={card} sub={sub} integrity={integrity} onVerify={handleRunVerify} />
