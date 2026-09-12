@@ -31,6 +31,16 @@ const LOCALITIES: Record<string, [number, number]> = {
   'nagarbhavi': [12.9645, 77.5178],
 }
 
+// Pulls a clean case ID out of whatever FIR number appears in the source
+// text ("FIR No-043", "FIR No. 0142/2024", etc.) — falls back to a short
+// random suffix only if no FIR number is found at all. This is only ever
+// a starting suggestion: the officer can freely edit it before saving.
+function extractFirNumber(text: string): string {
+  const m = text.match(/FIR\s*No\.?\s*-?\s*(\d+)/i)
+  if (m) return `FIR-${m[1]}`
+  return `FIR-${Math.floor(1000 + Math.random() * 9000)}`
+}
+
 function resolveLocation(locs: string[]): [number, number] {
   for (const loc of locs) {
     for (const [a, c] of Object.entries(LOCALITIES)) {
@@ -155,6 +165,15 @@ export default function LandingPage({
   const [added, setAdded] = useState(false)
   const [newCaseId, setNewCaseId] = useState<string | null>(null)
   const [stationId, setStationId] = useState(STATIONS[0].id)
+  // Editable review fields — populated from the parse result but never
+  // auto-saved. Nothing touches the database until "Save to Database"
+  // is clicked with whatever is currently typed in these fields.
+  const [editCaseId, setEditCaseId] = useState('')
+  const [editSuspect, setEditSuspect] = useState('')
+  const [editVehicle, setEditVehicle] = useState('')
+  const [editPhone, setEditPhone] = useState('')
+  const [editGang, setEditGang] = useState('')
+  const [editCrimeType, setEditCrimeType] = useState('')
   const [scanPreview, setScanPreview] = useState<string | null>(null)
   const [scanTranscript, setScanTranscript] = useState<string | null>(null)
   const [scanError, setScanError] = useState<string | null>(null)
@@ -218,12 +237,24 @@ export default function LandingPage({
       const data = await res.json()
       if (data.status === 'success') {
         setParsed(data)
+        primeEditFields(data)
         setParsing(false)
         return
       }
     } catch {}
-    setParsed(extractLocally(firText))
+    const local = extractLocally(firText)
+    setParsed(local)
+    primeEditFields(local)
     setParsing(false)
+  }
+
+  function primeEditFields(p: Parsed) {
+    setEditCaseId(extractFirNumber(firText))
+    setEditSuspect(p.suspects[0] || '')
+    setEditVehicle(p.vehicles[0] || '')
+    setEditPhone(p.phone_numbers[0] || '')
+    setEditGang(p.gang_affiliations[0] || '')
+    setEditCrimeType(p.crime_type || 'Unknown')
   }
 
   async function handleScanImage(file: File) {
@@ -259,20 +290,21 @@ export default function LandingPage({
 
   function handleAddFIR() {
     if (!parsed) return
+    const id = editCaseId.trim()
+    if (!id) return
     const [lat, lon] = resolveLocation(parsed.locations)
-    const id = `FIR${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`
     onAddIncident({
       id,
       date: new Date().toISOString().split('T')[0],
       latitude: lat,
       longitude: lon,
-      crime_type: parsed.crime_type || 'Unknown',
+      crime_type: editCrimeType.trim() || 'Unknown',
       severity_score: Math.max(1, Math.min(10, parsed.severity_score)),
       crime_hour: parsed.crime_hour,
-      suspect_name: parsed.suspects[0] || 'Unknown',
-      phone_number: parsed.phone_numbers[0] || undefined,
-      vehicle_number: parsed.vehicles[0] || undefined,
-      gang_affiliation: parsed.gang_affiliations[0] || 'Unknown',
+      suspect_name: editSuspect.trim() || 'Unknown',
+      phone_number: editPhone.trim() || undefined,
+      vehicle_number: editVehicle.trim() || undefined,
+      gang_affiliation: editGang.trim() || 'Unknown',
       evidence_found: parsed.evidence[0] || parsed.weapons[0] || 'None',
       case_status: 'Open',
       station: stationId,
@@ -554,73 +586,74 @@ export default function LandingPage({
                         {parsed.case_summary}
                       </p>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        {
-                          l: 'Type',
-                          v: parsed.crime_type,
-                          c: 'text-amber-600',
-                        },
-                        {
-                          l: 'Hour',
-                          v: `${parsed.crime_hour}:00`,
-                          c: 'text-blue-600',
-                        },
-                        {
-                          l: 'Severity',
-                          v: `${parsed.severity_score}/10`,
-                          c:
-                            parsed.severity_score >= 7
-                              ? 'text-red-600'
-                              : 'text-green-600',
-                        },
-                      ].map((f) => (
-                        <div
-                          key={f.l}
-                          className={`rounded-lg p-2 text-center border ${
-                            isDark
-                              ? 'bg-slate-700 border-slate-600'
-                              : 'bg-white border-slate-200'
-                          }`}
-                        >
-                          <p className={`text-xs ${textS}`}>{f.l}</p>
-                          <p className={`text-xs font-bold ${f.c}`}>{f.v}</p>
+
+                    {/* Review & edit — nothing is saved until "Save to Database" is clicked */}
+                    <div className={`rounded-lg p-3 border space-y-2 ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-white border-slate-200'}`}>
+                      <p className={`text-xs font-semibold ${textS}`}>Review before saving</p>
+
+                      <div>
+                        <label className={`block text-[11px] mb-0.5 ${textS}`}>Case / FIR ID</label>
+                        <input value={editCaseId} onChange={e => setEditCaseId(e.target.value)}
+                          disabled={added}
+                          placeholder="FIR-043"
+                          className={`w-full rounded-lg border px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500 ${inp}`} />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={`block text-[11px] mb-0.5 ${textS}`}>Suspect Name</label>
+                          <input value={editSuspect} onChange={e => setEditSuspect(e.target.value)} disabled={added}
+                            placeholder="Unknown"
+                            className={`w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500 ${inp}`} />
                         </div>
-                      ))}
+                        <div>
+                          <label className={`block text-[11px] mb-0.5 ${textS}`}>Crime Type</label>
+                          <input value={editCrimeType} onChange={e => setEditCrimeType(e.target.value)} disabled={added}
+                            placeholder="Unknown"
+                            className={`w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500 ${inp}`} />
+                        </div>
+                        <div>
+                          <label className={`block text-[11px] mb-0.5 ${textS}`}>Vehicle Number</label>
+                          <input value={editVehicle} onChange={e => setEditVehicle(e.target.value)} disabled={added}
+                            placeholder="e.g. DL-05-NB-5678"
+                            className={`w-full rounded-lg border px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500 ${inp}`} />
+                        </div>
+                        <div>
+                          <label className={`block text-[11px] mb-0.5 ${textS}`}>Phone Number</label>
+                          <input value={editPhone} onChange={e => setEditPhone(e.target.value)} disabled={added}
+                            placeholder="e.g. 9845600001"
+                            className={`w-full rounded-lg border px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500 ${inp}`} />
+                        </div>
+                        <div className="col-span-2">
+                          <label className={`block text-[11px] mb-0.5 ${textS}`}>Gang Affiliation</label>
+                          <input value={editGang} onChange={e => setEditGang(e.target.value)} disabled={added}
+                            placeholder="Unknown"
+                            className={`w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500 ${inp}`} />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className={`rounded-lg p-2 text-center border ${isDark ? 'bg-slate-800 border-slate-600' : 'bg-slate-50 border-slate-200'}`}>
+                          <p className={`text-xs ${textS}`}>Hour</p>
+                          <p className="text-xs font-bold text-blue-600">{parsed.crime_hour}:00</p>
+                        </div>
+                        <div className={`rounded-lg p-2 text-center border ${isDark ? 'bg-slate-800 border-slate-600' : 'bg-slate-50 border-slate-200'}`}>
+                          <p className={`text-xs ${textS}`}>Severity</p>
+                          <p className={`text-xs font-bold ${parsed.severity_score >= 7 ? 'text-red-600' : 'text-green-600'}`}>{parsed.severity_score}/10</p>
+                        </div>
+                      </div>
                     </div>
-                    {entityGroups.map(
-                      (g) =>
-                        g.items.length > 0 && (
-                          <div
-                            key={g.label}
-                            className={`border rounded-lg p-2 ${g.color}`}
-                          >
-                            <p className="text-xs font-semibold mb-1">
-                              {g.icon} {g.label}
-                            </p>
-                            <div className="flex flex-wrap gap-1">
-                              {g.items.map((item, i) => (
-                                <span
-                                  key={i}
-                                  className="text-xs px-2 py-0.5 bg-white/60 rounded font-mono border"
-                                >
-                                  {item}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )
-                    )}
+
                     <button
                       onClick={handleAddFIR}
-                      disabled={added}
+                      disabled={added || !editCaseId.trim()}
                       className={`w-full py-2.5 rounded-xl font-bold text-sm transition-colors ${
                         added
                           ? 'bg-green-600 text-white'
-                          : 'bg-blue-700 hover:bg-blue-600 text-white'
+                          : 'bg-blue-700 hover:bg-blue-600 disabled:bg-slate-300 disabled:text-slate-400 text-white'
                       }`}
                     >
-                      {added ? 'Case Added' : 'Add Case to Platform'}
+                      {added ? 'Saved to Database' : 'Save to Database'}
                     </button>
                     {added && newCaseId && (
                       <div className="mt-3">
