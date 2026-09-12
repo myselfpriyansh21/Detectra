@@ -3,24 +3,7 @@ backend/app.py
 ------------------------------------
 Detectra backend — standalone Flask app (Python 3.9+)
 PS-189: AI-Powered Criminal Network Analysis System
-
-Runs independently of any PaaS-specific function runtime — deploy it
-anywhere that runs a WSGI app (Railway, Render, a plain VM, etc).
-
-Routes:
-    GET  /health              -> liveness check
-    POST /cluster              -> DBSCAN hotspot clustering (map tab)
-    POST /parse_fir            -> Claude-powered FIR entity extraction,
-                                   with a regex fallback if no API key
-                                   is configured
-    POST /community            -> Louvain community detection on the
-                                   criminal network graph (falls back to
-                                   greedy modularity if python-louvain
-                                   isn't installed)
-
-Run locally:
-    pip install -r requirements.txt
-    python app.py                 # listens on :9000, matches vite.config.ts proxy
+Updated to use Google Gemini 2.5 Flash for text & multimodal FIR extraction.
 """
 
 import json
@@ -33,17 +16,34 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sklearn.cluster import DBSCAN
 
-import parser as fir_parser  # backend/parser.py — regex entity extractor
+# Load .env locally if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+import parser as fir_parser  # backend/parser.py
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # dev convenience; tighten origins before a real deployment
+CORS(app)
 
-DEFAULT_EPS = 0.5           # degrees — wide default since incidents can
-                             # now span multiple metro cities, not one city
+DEFAULT_EPS = 0.5
 DEFAULT_MIN_SAMPLES = 3
+
+# Initialize Gemini Client
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+gemini_client = None
+if GEMINI_API_KEY:
+    try:
+        from google import genai
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info("Google Gemini Client successfully initialized.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Gemini Client: {e}")
 
 
 # =========================================================
@@ -51,8 +51,6 @@ DEFAULT_MIN_SAMPLES = 3
 # =========================================================
 
 def find_dense_hotspots(incidents: list, eps: float, min_samples: int) -> dict:
-    """Run DBSCAN on a list of incident dicts and return cluster centers.
-    Noise points (label == -1) are excluded from center calculations."""
     if not incidents:
         return {"hotspots": [], "noise_count": 0, "total_incidents": 0}
 
@@ -103,7 +101,6 @@ def cluster():
     eps = float(body.get("eps", DEFAULT_EPS))
     min_samples = int(body.get("min_samples", DEFAULT_MIN_SAMPLES))
 
-    logger.info("Clustering %d incidents | eps=%.4f | min_samples=%d", len(incidents), eps, min_samples)
     try:
         result = find_dense_hotspots(incidents, eps=eps, min_samples=min_samples)
     except Exception:
@@ -114,7 +111,7 @@ def cluster():
 
 
 # =========================================================
-# FIR ENTITY EXTRACTION — Claude Sonnet, regex fallback
+# FIR ENTITY EXTRACTION — Gemini 2.5 Flash + Regex Fallback
 # =========================================================
 
 @app.route("/parse_fir", methods=["POST"])
@@ -125,115 +122,24 @@ def parse_fir():
 
     fir_text = body["text"]
 
+    # 1. Primary: Use Gemini via backend/parser.py
     try:
-        import anthropic
-
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not set")
-
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1000,
-            messages=[{
-                "role": "user",
-                "content": f"""Extract structured information from this police FIR text.
-Return ONLY a valid JSON object — no explanation, no markdown, no backticks.
-
-Required JSON format:
-{{
-  "suspects": ["full name 1", "full name 2"],
-  "vehicles": ["DL-05-NB-1234"],
-  "weapons": ["pistol", "knife"],
-  "phone_numbers": ["9876543210"],
-  "locations": ["area or landmark name, any city"],
-  "gang_affiliations": ["Gang name"],
-  "evidence": ["Gold chain", "Crowbar"],
-  "crime_type": "Chain Snatching",
-  "crime_hour": 22,
-  "severity_score": 7,
-  "case_summary": "One sentence summary of the incident for an officer."
-}}
-
-Rules:
-- crime_type must be one of: Chain Snatching, Burglary, Assault, Vehicle Theft, Financial Fraud, Social Media Fraud, Unknown
-- crime_hour is 0-23 integer
-- severity_score is 1-10 integer based on violence/impact
-- locations are whatever area/landmark names appear in the text — the
-  platform is national, so do not assume any single city
-- If a field has no data, use an empty array [] or sensible default
-
-FIR Text:
-{fir_text}"""
-            }]
-        )
-
-        result = json.loads(message.content[0].text)
-        result["status"] = "success"
-        result["method"] = "claude"
-        return jsonify(result)
-
+        parsed_result = fir_parser.parse_police_log(fir_text)
+        return jsonify(parsed_result)
     except Exception as exc:
-        logger.warning("Claude API unavailable: %s — falling back to regex", exc)
+        logger.warning("Gemini parsing threw error: %s — using backup regex", exc)
 
-    # Regex fallback — reuses backend/parser.py
+    # 2. Local Fallback
     try:
-        extracted = fir_parser.parse_police_log(fir_text)
-        t = fir_text.lower()
-
-        crime_map = {
-            'snatch': 'Chain Snatching', 'chain': 'Chain Snatching',
-            'burgl': 'Burglary', 'theft': 'Vehicle Theft',
-            'assault': 'Assault', 'attack': 'Assault',
-            'phishing': 'Financial Fraud', 'upi': 'Financial Fraud',
-            'otp': 'Financial Fraud', 'bank fraud': 'Financial Fraud',
-            'investment scam': 'Financial Fraud', 'fraud': 'Financial Fraud',
-            'fake profile': 'Social Media Fraud', 'catfish': 'Social Media Fraud',
-            'sextortion': 'Social Media Fraud', 'impersonat': 'Social Media Fraud',
-        }
-        crime_type = 'Unknown'
-        for kw, ct in crime_map.items():
-            if kw in t:
-                crime_type = ct
-                break
-
-        hour_match = re.search(r'(\d{1,2})[:\s]?\d{0,2}\s*(hrs?|am|pm)', t)
-        crime_hour = 22
-        if hour_match:
-            h = int(hour_match.group(1))
-            if 'pm' in hour_match.group(2) and h < 12:
-                h += 12
-            crime_hour = h % 24
-
-        result = {
-            "status": "success",
-            "method": "regex",
-            "suspects": [],
-            "vehicles": extracted["vehicle_numbers"],
-            "weapons": extracted["flagged_keywords"],
-            "phone_numbers": extracted["phone_numbers"],
-            "locations": [],
-            "gang_affiliations": [],
-            "evidence": extracted["flagged_keywords"],
-            "crime_type": crime_type,
-            "crime_hour": crime_hour,
-            "severity_score": 6,
-            "case_summary": f"Incident parsed via pattern matching. Type: {crime_type}.",
-        }
-        return jsonify(result)
-
+        fallback_result = fir_parser._extract_via_regex(fir_text)
+        return jsonify(fallback_result)
     except Exception:
-        logger.exception("FIR parsing failed")
+        logger.exception("FIR parsing failed completely")
         return jsonify({"status": "error", "message": "Parsing failed."}), 500
 
 
 # =========================================================
-# SCAN WRITTEN REPORT — Claude vision transcribes + extracts
-# in one pass from a photographed/scanned FIR or report.
-# No offline fallback exists for this route (OCR needs a real
-# vision model), so it returns a clear error if the API key
-# isn't configured rather than silently failing.
+# SCAN WRITTEN REPORT — Gemini Multimodal Vision
 # =========================================================
 
 @app.route("/scan_report", methods=["POST"])
@@ -242,85 +148,66 @@ def scan_report():
     if not body or "image_base64" not in body:
         return jsonify({"status": "error", "message": "Missing 'image_base64' field"}), 400
 
+    if not gemini_client:
+        return jsonify({"status": "error", "message": "GEMINI_API_KEY not configured on server."}), 500
+
     image_base64 = body["image_base64"]
     media_type = body.get("media_type", "image/jpeg")
 
     try:
-        import anthropic
+        import base64
+        from google.genai import types
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not set")
+        image_bytes = base64.b64decode(image_base64)
 
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1200,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": media_type, "data": image_base64},
-                    },
-                    {
-                        "type": "text",
-                        "text": """This image is a photograph or scan of a handwritten or printed police
-report (FIR, complaint, or intelligence note). First transcribe the
-visible text as accurately as possible, then extract structured
-information from it.
+        prompt = """
+        This image is a photograph or scan of a handwritten or printed police report (FIR, complaint, or note).
+        Transcribe the text as accurately as possible and extract structured details into JSON.
 
-Return ONLY a valid JSON object — no explanation, no markdown, no backticks.
+        Required JSON structure:
+        {
+          "transcript": "Transcription of the report text.",
+          "case_id": "FIR-043",
+          "suspects": ["Suspect Name"],
+          "vehicles": ["DL-05-NB-1234"],
+          "weapons": ["pistol", "knife"],
+          "phone_numbers": ["+919876543210"],
+          "locations": ["Karol Bagh", "Delhi"],
+          "gang_affiliations": ["D-Company"],
+          "evidence": ["9mm Shells"],
+          "crime_type": "Armed Robbery",
+          "crime_hour": 21,
+          "severity_score": 8,
+          "case_summary": "One sentence summary of incident."
+        }
+        """
 
-Required JSON format:
-{
-  "transcript": "Best-effort transcription of the report text.",
-  "suspects": ["full name 1", "full name 2"],
-  "vehicles": ["DL-05-NB-1234"],
-  "weapons": ["pistol", "knife"],
-  "phone_numbers": ["9876543210"],
-  "locations": ["area or landmark name, any city"],
-  "gang_affiliations": ["Gang name"],
-  "evidence": ["Gold chain", "Crowbar"],
-  "crime_type": "Chain Snatching",
-  "crime_hour": 22,
-  "severity_score": 7,
-  "case_summary": "One sentence summary of the incident for an officer."
-}
-
-Rules:
-- crime_type must be one of: Chain Snatching, Burglary, Assault, Vehicle Theft, Financial Fraud, Social Media Fraud, Unknown
-- crime_hour is 0-23 integer
-- severity_score is 1-10 integer based on violence/impact
-- locations are whatever area/landmark names appear in the text — the
-  platform is national, so do not assume any single city
-- If the handwriting is partly illegible, transcribe what you can and
-  leave uncertain fields empty rather than guessing
-- If a field has no data, use an empty array [] or sensible default""",
-                    },
-                ],
-            }],
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=media_type),
+                prompt
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
         )
 
-        result = json.loads(message.content[0].text)
+        result = json.loads(response.text)
         result["status"] = "success"
-        result["method"] = "claude-vision"
+        result["method"] = "gemini-vision"
         return jsonify(result)
 
     except Exception:
         logger.exception("Report scan failed")
         return jsonify({
             "status": "error",
-            "message": "Could not scan this image. Make sure the server has ANTHROPIC_API_KEY configured, or type the report text manually instead.",
+            "message": "Could not scan image with Gemini Vision.",
         }), 500
 
 
 # =========================================================
 # LOUVAIN COMMUNITY DETECTION
-# Groups the criminal network into densely-connected clusters —
-# this is how Detectra surfaces distinct gangs/cells from a single
-# fused graph, and directly implements the "detect suspicious
-# patterns" + "key influencers" requirements of PS-189.
 # =========================================================
 
 @app.route("/community", methods=["POST"])
@@ -342,11 +229,9 @@ def community():
 
         method = "louvain"
         try:
-            import community as community_louvain  # python-louvain package, imports as `community`
+            import community as community_louvain
             partition = community_louvain.best_partition(G, weight="weight")
         except ImportError:
-            # Fallback: networkx's built-in greedy modularity communities
-            # (no external dependency, similar spirit to Louvain)
             method = "greedy_modularity"
             communities = nx.algorithms.community.greedy_modularity_communities(G, weight="weight")
             partition = {}
@@ -354,15 +239,13 @@ def community():
                 for node in comm:
                     partition[node] = idx
 
-        # PageRank for "key influencer" identification, computed on the
-        # same graph so both signals come from one backend call.
         pagerank = nx.pagerank(G, weight="weight") if G.number_of_edges() > 0 else {n: 0.0 for n in node_ids}
 
         return jsonify({
             "status": "success",
             "method": method,
-            "communities": partition,          # { node_id: community_index }
-            "page_rank": pagerank,              # { node_id: score }
+            "communities": partition,
+            "page_rank": pagerank,
             "community_count": len(set(partition.values())) if partition else 0,
         })
 
