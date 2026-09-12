@@ -63,7 +63,7 @@ export default function CrimeAssistant({ incidents }: CrimeAssistantProps) {
     if (!selectedCase) return
     setLoading(true); setSummary(null)
     try {
-      const res = await fetch('/api/parse_fir', {
+      const res = await fetch('https://detectra-cxkp.onrender.com/parse_fir', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
